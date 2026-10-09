@@ -1,10 +1,15 @@
-let adminPin = sessionStorage.getItem('admin_pin') || '';
+const CLOUD_DB_BASE = "https://qr-payment-live-default-rtdb.asia-southeast1.firebasedatabase.app";
 
-let merchantSettings = JSON.parse(localStorage.getItem('qr_merchant_settings')) || {
+let adminPin = sessionStorage.getItem('admin_pin') || '';
+let allRequests = [];
+let masterQrUrl = '';
+let targetRequestId = null;
+let autoRefreshTimer = null;
+let merchantSettings = {
   payeeName: 'Inspire Technologies',
   upiId: 'payment.express@upi',
-  customQrUrl: '',
-  adminPin: '1234'
+  adminPin: '1234',
+  defaultQrImageUrl: ''
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -13,15 +18,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const loginForm = document.getElementById('admin-login-form');
   if (loginForm) loginForm.addEventListener('submit', handleLogin);
 
+  const sendQrForm = document.getElementById('send-qr-form');
+  if (sendQrForm) sendQrForm.addEventListener('submit', handleSendSpecificQr);
+
   if (adminPin) {
     verifyAndInitAdmin();
   }
 });
 
-function handleLogin(e) {
+async function handleLogin(e) {
   e.preventDefault();
   const inputPin = document.getElementById('adminPinInput').value.trim();
 
+  await fetchSettings();
   if (inputPin === merchantSettings.adminPin || inputPin === '1234') {
     adminPin = inputPin;
     sessionStorage.setItem('admin_pin', adminPin);
@@ -33,7 +42,7 @@ function handleLogin(e) {
   }
 }
 
-function verifyAndInitAdmin() {
+async function verifyAndInitAdmin() {
   document.getElementById('loginModal').classList.remove('show');
   loadAdminDashboard();
 }
@@ -41,44 +50,92 @@ function verifyAndInitAdmin() {
 function logoutAdmin() {
   sessionStorage.removeItem('admin_pin');
   adminPin = '';
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   location.reload();
 }
 
-function loadAdminDashboard() {
+async function loadAdminDashboard() {
   document.getElementById('admin-dashboard').style.display = 'block';
-  document.getElementById('admin-merchant-name').innerText = merchantSettings.payeeName;
+  await fetchSettings();
+  await fetchAdminRequests();
 
-  if (merchantSettings.customQrUrl) {
-    showMasterQrPreview(merchantSettings.customQrUrl);
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = setInterval(fetchAdminRequests, 2000);
+}
+
+async function fetchSettings() {
+  try {
+    const res = await fetch(`${CLOUD_DB_BASE}/settings.json`);
+    const data = await res.json();
+    if (data) {
+      merchantSettings = { ...merchantSettings, ...data };
+      document.getElementById('admin-merchant-name').innerText = merchantSettings.payeeName;
+      if (merchantSettings.defaultQrImageUrl) {
+        masterQrUrl = merchantSettings.defaultQrImageUrl;
+        showMasterQrPreview(masterQrUrl);
+      }
+    }
+  } catch (err) {
+    console.error('Fetch settings error:', err);
   }
-  renderRequestsTable();
+}
+
+async function fetchAdminRequests() {
+  try {
+    const res = await fetch(`${CLOUD_DB_BASE}/requests.json`);
+    const data = await res.json();
+
+    allRequests = [];
+    if (data) {
+      Object.keys(data).forEach(key => {
+        if (data[key]) allRequests.push(data[key]);
+      });
+      // Sort newest first
+      allRequests.sort((a, b) => new Date(b.date) - new Date(a.date));
+    }
+    renderRequestsTable();
+  } catch (err) {
+    console.error('Fetch requests error:', err);
+  }
 }
 
 function showMasterQrPreview(url) {
   const box = document.getElementById('master-qr-preview-box');
   const img = document.getElementById('master-qr-img-preview');
-  if (img && box) {
+  if (box && img) {
     img.src = url;
     box.style.display = 'flex';
   }
 }
 
-function uploadMasterQr() {
+async function uploadMasterQr() {
   const fileInput = document.getElementById('masterQrInput');
   if (!fileInput.files[0]) {
-    showToast('Please select a QR image file', 'error');
+    showToast('Please select a QR image to upload', 'error');
     return;
   }
 
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    merchantSettings.customQrUrl = e.target.result;
-    localStorage.setItem('qr_merchant_settings', JSON.stringify(merchantSettings));
-    showToast('Master QR Code Image saved successfully!', 'success');
-    showMasterQrPreview(merchantSettings.customQrUrl);
-    fileInput.value = '';
-  };
-  reader.readAsDataURL(fileInput.files[0]);
+  const dataUrl = await fileToDataUrl(fileInput.files[0]);
+
+  try {
+    const res = await fetch(`${CLOUD_DB_BASE}/settings.json`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultQrImageUrl: dataUrl })
+    });
+
+    if (res.ok) {
+      masterQrUrl = dataUrl;
+      merchantSettings.defaultQrImageUrl = dataUrl;
+      showMasterQrPreview(masterQrUrl);
+      showToast('Master QR Image saved to Cloud Database!', 'success');
+      fileInput.value = '';
+    } else {
+      showToast('Error uploading Master QR', 'error');
+    }
+  } catch (err) {
+    showToast('Network error during upload', 'error');
+  }
 }
 
 function renderRequestsTable() {
@@ -86,46 +143,180 @@ function renderRequestsTable() {
   if (!tbody) return;
   tbody.innerHTML = '';
 
-  const activeReq = JSON.parse(localStorage.getItem('active_qr_request'));
-
-  if (!activeReq) {
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:24px;">No active client QR requests. Test on client page!</td></tr>`;
+  if (allRequests.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:24px;">No client QR requests yet. Test on client portal!</td></tr>`;
     return;
   }
 
-  const tr = document.createElement('tr');
-  const formattedDate = new Date(activeReq.date).toLocaleString('en-IN', {
-    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+  allRequests.forEach(r => {
+    const tr = document.createElement('tr');
+    
+    let badgeClass = 'badge-pending';
+    let statusLabel = r.status;
+    if (r.status === 'Pending Admin QR') {
+      badgeClass = 'badge-pending';
+      statusLabel = '⏳ Needs QR Code';
+    } else if (r.status === 'QR Sent') {
+      badgeClass = 'badge-approved';
+      statusLabel = '📲 QR Sent to Client';
+    } else if (r.status === 'Payment Submitted') {
+      badgeClass = 'badge-pending';
+      statusLabel = '💳 UTR Submitted';
+    } else if (r.status === 'Approved') {
+      badgeClass = 'badge-approved';
+      statusLabel = '✅ Payment Verified';
+    } else if (r.status === 'Rejected') {
+      badgeClass = 'badge-rejected';
+      statusLabel = '❌ Rejected';
+    }
+
+    const formattedDate = new Date(r.date).toLocaleString('en-IN', {
+      day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+    });
+
+    const screenshotBtn = r.screenshotUrl
+      ? `<button class="btn btn-secondary btn-sm" onclick="zoomImage('${r.screenshotUrl}')"><i data-lucide="image" style="width:14px;"></i> Proof</button>`
+      : (r.utr ? `<code style="font-size:0.8rem; color:#38bdf8;">${r.utr}</code>` : '-');
+
+    const waMsg = encodeURIComponent(
+      `Hello ${r.clientName}, your Payment QR Code of ₹${r.amount} is ready! Open client link to pay.`
+    );
+    const waUrl = `https://wa.me/91${r.clientPhone.replace(/\D/g, '')}?text=${waMsg}`;
+
+    tr.innerHTML = `
+      <td>
+        <div style="font-weight:700; color:#fff;">${r.id}</div>
+        <div style="font-size:0.75rem; color:var(--text-muted);">${formattedDate}</div>
+      </td>
+      <td>
+        <div style="font-weight:600; color:#f8fafc;">${r.clientName}</div>
+        <div style="font-size:0.82rem; color:#38bdf8; font-weight:700;">📱 ${r.clientPhone}</div>
+      </td>
+      <td style="font-weight:800; color:#10b981; font-size:1.05rem;">₹ ${r.amount.toLocaleString('en-IN')}</td>
+      <td style="font-size:0.85rem; color:#cbd5e1;">${r.serviceNote || '-'}</td>
+      <td><span class="badge ${badgeClass}">${statusLabel}</span></td>
+      <td>${screenshotBtn}</td>
+      <td>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button class="btn btn-primary btn-sm" onclick="openSendQrModal('${r.id}', '${r.clientName}', ${r.amount})" title="Attach & Send QR Image to Client">
+            <i data-lucide="send" style="width:14px;"></i> Send QR
+          </button>
+          <a href="${waUrl}" target="_blank" class="btn btn-secondary btn-sm" style="color:#25D366; border-color:rgba(37,211,102,0.3);" title="WhatsApp Client">
+            <i data-lucide="message-circle" style="width:14px;"></i>
+          </a>
+          ${r.status === 'Payment Submitted' ? `<button class="btn btn-success btn-sm" onclick="updateStatus('${r.id}', 'Approved')" title="Approve Payment"><i data-lucide="check" style="width:14px;"></i></button>` : ''}
+          <button class="btn btn-danger btn-sm" onclick="deleteRequest('${r.id}')" title="Delete"><i data-lucide="trash-2" style="width:14px;"></i></button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
   });
 
-  const waText = encodeURIComponent(
-    `Hello ${activeReq.clientName}, your Payment QR Code of ₹${activeReq.amount} is ready! Thank you.`
-  );
-  const waUrl = `https://wa.me/91${activeReq.clientPhone.replace(/\D/g, '')}?text=${waText}`;
-
-  tr.innerHTML = `
-    <td>
-      <div style="font-weight:700; color:#fff;">${activeReq.id}</div>
-      <div style="font-size:0.75rem; color:var(--text-muted);">${formattedDate}</div>
-    </td>
-    <td>
-      <div style="font-weight:600; color:#f8fafc;">${activeReq.clientName}</div>
-      <div style="font-size:0.82rem; color:#38bdf8; font-weight:700;">📱 ${activeReq.clientPhone}</div>
-    </td>
-    <td style="font-weight:800; color:#10b981; font-size:1.05rem;">₹ ${activeReq.amount.toLocaleString('en-IN')}</td>
-    <td style="font-size:0.85rem; color:#cbd5e1;">${activeReq.serviceNote || '-'}</td>
-    <td><span class="badge badge-approved">📲 QR Generated</span></td>
-    <td>-</td>
-    <td>
-      <div style="display:flex; gap:6px;">
-        <a href="${waUrl}" target="_blank" class="btn btn-secondary btn-sm" style="color:#25D366; border-color:rgba(37,211,102,0.3);" title="Send WhatsApp Message">
-          <i data-lucide="message-circle" style="width:14px;"></i> WhatsApp
-        </a>
-      </div>
-    </td>
-  `;
-  tbody.appendChild(tr);
   lucide.createIcons();
+}
+
+function openSendQrModal(id, clientName, amount) {
+  targetRequestId = id;
+  document.getElementById('modal-client-name').innerText = clientName;
+  document.getElementById('modal-client-amount').innerText = `₹${amount}`;
+  document.getElementById('sendQrModal').classList.add('show');
+}
+
+function closeSendQrModal() {
+  document.getElementById('sendQrModal').classList.remove('show');
+}
+
+async function handleSendSpecificQr(e) {
+  e.preventDefault();
+  if (!targetRequestId) return;
+
+  const fileInput = document.getElementById('specificQrFileInput');
+  if (!fileInput.files[0]) {
+    showToast('Please select a QR image file to send, or use Master QR button.', 'error');
+    return;
+  }
+
+  const qrDataUrl = await fileToDataUrl(fileInput.files[0]);
+  await dispatchQrToClient(targetRequestId, qrDataUrl);
+}
+
+async function sendMasterQrToClient() {
+  if (!targetRequestId) return;
+  if (!masterQrUrl) {
+    showToast('Please upload a Master QR Image first!', 'error');
+    return;
+  }
+  await dispatchQrToClient(targetRequestId, masterQrUrl);
+}
+
+async function dispatchQrToClient(reqId, qrUrl) {
+  try {
+    const res = await fetch(`${CLOUD_DB_BASE}/requests/${reqId}.json`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assignedQrUrl: qrUrl, status: 'QR Sent' })
+    });
+
+    if (res.ok) {
+      closeSendQrModal();
+      showToast('Payment QR Code sent to client! Client screen will auto-update.', 'success');
+      await fetchAdminRequests();
+    } else {
+      showToast('Error sending QR code.', 'error');
+    }
+  } catch (err) {
+    showToast('Network error while dispatching QR', 'error');
+  }
+}
+
+async function updateStatus(id, newStatus) {
+  try {
+    const res = await fetch(`${CLOUD_DB_BASE}/requests/${id}.json`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: newStatus })
+    });
+
+    if (res.ok) {
+      showToast(`Marked as ${newStatus}`, 'success');
+      await fetchAdminRequests();
+    }
+  } catch (err) {
+    showToast('Error updating status', 'error');
+  }
+}
+
+async function deleteRequest(id) {
+  if (!confirm('Delete this request?')) return;
+  try {
+    const res = await fetch(`${CLOUD_DB_BASE}/requests/${id}.json`, {
+      method: 'DELETE'
+    });
+
+    if (res.ok) {
+      showToast('Request deleted', 'success');
+      await fetchAdminRequests();
+    }
+  } catch (err) {
+    showToast('Error deleting', 'error');
+  }
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.readAsDataURL(file);
+  });
+}
+
+function zoomImage(url) {
+  document.getElementById('modalZoomImage').src = url;
+  document.getElementById('imageModal').classList.add('show');
+}
+
+function closeImageModal() {
+  document.getElementById('imageModal').classList.remove('show');
 }
 
 function showToast(msg, type = 'info') {
