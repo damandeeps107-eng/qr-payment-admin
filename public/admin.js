@@ -76,7 +76,6 @@ async function loadAdminDashboard() {
   document.getElementById('admin-dashboard').style.display = 'block';
   await fetchAdminRequests();
 
-  // Auto-refresh requests list every 3 seconds for real-time experience
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   autoRefreshTimer = setInterval(fetchAdminRequests, 3000);
 }
@@ -144,7 +143,7 @@ function renderRequestsTable() {
   tbody.innerHTML = '';
 
   if (allRequests.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:24px;">No client QR requests yet. Open client portal to test!</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:24px;">No client QR requests yet.</td></tr>`;
     return;
   }
 
@@ -178,6 +177,13 @@ function renderRequestsTable() {
       ? `<button class="btn btn-secondary btn-sm" onclick="zoomImage('${r.screenshotUrl}')"><i data-lucide="image" style="width:14px;"></i> Proof</button>`
       : (r.utr ? `<code style="font-size:0.8rem; color:#38bdf8;">${r.utr}</code>` : '-');
 
+    // Generate WhatsApp direct notify link with request recovery URL
+    const clientPortalUrl = window.location.origin.replace('admin', 'client'); // Fallback or domain
+    const waText = encodeURIComponent(
+      `Hello ${r.clientName}, your Payment QR Code of ₹${r.amount} is ready! Open link to view & pay: ${clientPortalUrl}/?req=${r.id}`
+    );
+    const waUrl = `https://wa.me/91${r.clientPhone.replace(/\D/g, '')}?text=${waText}`;
+
     tr.innerHTML = `
       <td>
         <div style="font-weight:700; color:#fff;">${r.id}</div>
@@ -192,10 +198,13 @@ function renderRequestsTable() {
       <td><span class="badge ${badgeClass}">${statusLabel}</span></td>
       <td>${screenshotBtn}</td>
       <td>
-        <div style="display:flex; gap:6px;">
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
           <button class="btn btn-primary btn-sm" onclick="openSendQrModal('${r.id}', '${r.clientName}', ${r.amount})" title="Attach & Send QR Image to Client">
             <i data-lucide="send" style="width:14px;"></i> Send QR
           </button>
+          <a href="${waUrl}" target="_blank" class="btn btn-secondary btn-sm" style="color:#25D366; border-color:rgba(37,211,102,0.3);" title="Send Direct WhatsApp Link">
+            <i data-lucide="message-circle" style="width:14px;"></i> WhatsApp
+          </a>
           ${r.status === 'Payment Submitted' ? `<button class="btn btn-success btn-sm" onclick="updateStatus('${r.id}', 'Approved')" title="Approve Payment"><i data-lucide="check" style="width:14px;"></i></button>` : ''}
           <button class="btn btn-danger btn-sm" onclick="deleteRequest('${r.id}')" title="Delete"><i data-lucide="trash-2" style="width:14px;"></i></button>
         </div>
