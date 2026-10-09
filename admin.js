@@ -1,4 +1,3 @@
-const CLOUD_DB_BASE = "https://qr-payment-live-default-rtdb.asia-southeast1.firebasedatabase.app";
 const bc = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('qr_payment_channel') : null;
 
 let adminPin = sessionStorage.getItem('admin_pin') || '';
@@ -22,7 +21,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const sendQrForm = document.getElementById('send-qr-form');
   if (sendQrForm) sendQrForm.addEventListener('submit', handleSendSpecificQr);
 
-  // Listen to BroadcastChannel for instant local notifications
   if (bc) {
     bc.onmessage = (event) => {
       if (event.data && event.data.type === 'NEW_REQUEST') {
@@ -37,11 +35,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-async function handleLogin(e) {
+function handleLogin(e) {
   e.preventDefault();
   const inputPin = document.getElementById('adminPinInput').value.trim();
 
-  await fetchSettings();
   if (inputPin === merchantSettings.adminPin || inputPin === '1234') {
     adminPin = inputPin;
     sessionStorage.setItem('admin_pin', adminPin);
@@ -53,7 +50,7 @@ async function handleLogin(e) {
   }
 }
 
-async function verifyAndInitAdmin() {
+function verifyAndInitAdmin() {
   document.getElementById('loginModal').classList.remove('show');
   loadAdminDashboard();
 }
@@ -67,39 +64,21 @@ function logoutAdmin() {
 
 async function loadAdminDashboard() {
   document.getElementById('admin-dashboard').style.display = 'block';
-  await fetchSettings();
   await fetchAdminRequests();
 
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   autoRefreshTimer = setInterval(fetchAdminRequests, 2000);
 }
 
-async function fetchSettings() {
-  try {
-    const res = await fetch(`${CLOUD_DB_BASE}/settings.json`);
-    const data = await res.json();
-    if (data) {
-      merchantSettings = { ...merchantSettings, ...data };
-      document.getElementById('admin-merchant-name').innerText = merchantSettings.payeeName;
-      if (merchantSettings.defaultQrImageUrl) {
-        masterQrUrl = merchantSettings.defaultQrImageUrl;
-        showMasterQrPreview(masterQrUrl);
-      }
-    }
-  } catch (err) {}
-}
-
 async function fetchAdminRequests() {
-  let cloudItems = [];
+  let apiItems = [];
 
-  // 1. Fetch Cloud requests
+  // 1. Fetch from Vercel API /api/requests
   try {
-    const res = await fetch(`${CLOUD_DB_BASE}/requests.json`);
+    const res = await fetch('/api/requests');
     const data = await res.json();
-    if (data) {
-      Object.keys(data).forEach(key => {
-        if (data[key]) cloudItems.push(data[key]);
-      });
+    if (data && data.requests) {
+      apiItems = data.requests;
     }
   } catch (err) {}
 
@@ -117,7 +96,7 @@ async function fetchAdminRequests() {
 
   // Combine and deduplicate
   const map = new Map();
-  cloudItems.forEach(item => map.set(item.id, item));
+  apiItems.forEach(item => map.set(item.id, item));
   localItems.forEach(item => {
     if (!map.has(item.id) || (item.status !== 'Pending Admin QR')) {
       map.set(item.id, item);
@@ -150,14 +129,6 @@ async function uploadMasterQr() {
   masterQrUrl = dataUrl;
   merchantSettings.defaultQrImageUrl = dataUrl;
   showMasterQrPreview(masterQrUrl);
-
-  try {
-    await fetch(`${CLOUD_DB_BASE}/settings.json`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ defaultQrImageUrl: dataUrl })
-    });
-  } catch (err) {}
 
   showToast('Master QR Image saved!', 'success');
   fileInput.value = '';
@@ -281,17 +252,16 @@ async function dispatchQrToClient(reqId, qrUrl) {
   reqObj.status = 'QR Sent';
   localStorage.setItem(`qr_req_${reqId}`, JSON.stringify(reqObj));
 
-  // Send BroadcastChannel message to local client tab
   if (bc) {
     bc.postMessage({ type: 'QR_SENT', requestId: reqId, request: reqObj });
   }
 
-  // Update Cloud DB
+  // Update API /api/requests
   try {
-    await fetch(`${CLOUD_DB_BASE}/requests/${reqId}.json`, {
+    await fetch('/api/requests', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assignedQrUrl: qrUrl, status: 'QR Sent' })
+      body: JSON.stringify({ id: reqId, assignedQrUrl: qrUrl, status: 'QR Sent' })
     });
   } catch (err) {}
 
@@ -308,10 +278,10 @@ async function updateStatus(id, newStatus) {
   }
 
   try {
-    await fetch(`${CLOUD_DB_BASE}/requests/${id}.json`, {
+    await fetch('/api/requests', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: newStatus })
+      body: JSON.stringify({ id, status: newStatus })
     });
   } catch (err) {}
 
@@ -325,7 +295,7 @@ async function deleteRequest(id) {
   localStorage.removeItem(`qr_req_${id}`);
 
   try {
-    await fetch(`${CLOUD_DB_BASE}/requests/${id}.json`, { method: 'DELETE' });
+    await fetch(`/api/requests?id=${id}`, { method: 'DELETE' });
   } catch (err) {}
 
   showToast('Request deleted', 'success');
