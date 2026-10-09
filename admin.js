@@ -75,9 +75,7 @@ async function fetchSettings() {
         showMasterQrPreview(masterQrUrl);
       }
     }
-  } catch (err) {
-    console.error('Fetch settings error:', err);
-  }
+  } catch (err) {}
 }
 
 async function fetchAdminRequests() {
@@ -90,13 +88,10 @@ async function fetchAdminRequests() {
       Object.keys(data).forEach(key => {
         if (data[key]) allRequests.push(data[key]);
       });
-      // Sort newest first
       allRequests.sort((a, b) => new Date(b.date) - new Date(a.date));
     }
     renderRequestsTable();
-  } catch (err) {
-    console.error('Fetch requests error:', err);
-  }
+  } catch (err) {}
 }
 
 function showMasterQrPreview(url) {
@@ -198,7 +193,7 @@ function renderRequestsTable() {
       <td>${screenshotBtn}</td>
       <td>
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
-          <button class="btn btn-primary btn-sm" onclick="openSendQrModal('${r.id}', '${r.clientName}', ${r.amount})" title="Attach & Send QR Image to Client">
+          <button class="btn btn-primary btn-sm" onclick="openSendQrModal('${r.id}', '${r.clientName}', ${r.amount})" title="Attach & Send Specific QR Image to Client">
             <i data-lucide="send" style="width:14px;"></i> Send QR
           </button>
           <a href="${waUrl}" target="_blank" class="btn btn-secondary btn-sm" style="color:#25D366; border-color:rgba(37,211,102,0.3);" title="WhatsApp Client">
@@ -232,7 +227,7 @@ async function handleSendSpecificQr(e) {
 
   const fileInput = document.getElementById('specificQrFileInput');
   if (!fileInput.files[0]) {
-    showToast('Please select a QR image file to send, or use Master QR button.', 'error');
+    showToast('Please select a QR image file to send, or click Send Master QR.', 'error');
     return;
   }
 
@@ -259,7 +254,7 @@ async function dispatchQrToClient(reqId, qrUrl) {
 
     if (res.ok) {
       closeSendQrModal();
-      showToast('Payment QR Code sent to client! Client screen will auto-update.', 'success');
+      showToast('Specific QR Code sent to client! Client screen will now show QR.', 'success');
       await fetchAdminRequests();
     } else {
       showToast('Error sending QR code.', 'error');
