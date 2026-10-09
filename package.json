@@ -1,9 +1,10 @@
 {
   "name": "qr-payment-admin",
   "version": "1.0.0",
-  "description": "Standalone Admin QR Dispatcher & Payment Management Panel",
-  "main": "server.js",
+  "description": "Admin Payment QR Dispatcher & Management Panel",
+  "main": "api/index.js",
   "scripts": {
+    "build": "echo 'Build Completed'",
     "start": "node server.js"
   },
   "dependencies": {
