@@ -1,15 +1,15 @@
-const bc = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('qr_payment_channel') : null;
+const MASTER_INDEX_ID = "ff808181a09d98f701a11ecd111827bb";
+const CLOUD_API_BASE = "https://api.restful-api.dev/objects";
 
 let adminPin = sessionStorage.getItem('admin_pin') || '';
 let allRequests = [];
-let masterQrUrl = '';
-let targetRequestId = null;
+let masterQrUrl = localStorage.getItem('admin_master_qr_url') || '';
+let targetRequestCloudId = null;
 let autoRefreshTimer = null;
 let merchantSettings = {
   payeeName: 'Inspire Technologies',
   upiId: 'payment.express@upi',
-  adminPin: '1234',
-  defaultQrImageUrl: ''
+  adminPin: '1234'
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -20,15 +20,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const sendQrForm = document.getElementById('send-qr-form');
   if (sendQrForm) sendQrForm.addEventListener('submit', handleSendSpecificQr);
-
-  if (bc) {
-    bc.onmessage = (event) => {
-      if (event.data && event.data.type === 'NEW_REQUEST') {
-        fetchAdminRequests();
-        showToast(`New QR Request received from ${event.data.request.clientName}!`, 'info');
-      }
-    };
-  }
 
   if (adminPin) {
     verifyAndInitAdmin();
@@ -64,6 +55,12 @@ function logoutAdmin() {
 
 async function loadAdminDashboard() {
   document.getElementById('admin-dashboard').style.display = 'block';
+  document.getElementById('admin-merchant-name').innerText = merchantSettings.payeeName;
+
+  if (masterQrUrl) {
+    showMasterQrPreview(masterQrUrl);
+  }
+
   await fetchAdminRequests();
 
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
@@ -71,42 +68,33 @@ async function loadAdminDashboard() {
 }
 
 async function fetchAdminRequests() {
-  let apiItems = [];
-
-  // 1. Fetch from Vercel API /api/requests
   try {
-    const res = await fetch('/api/requests');
-    const data = await res.json();
-    if (data && data.requests) {
-      apiItems = data.requests;
-    }
-  } catch (err) {}
+    const res = await fetch(`${CLOUD_API_BASE}/${MASTER_INDEX_ID}`);
+    const masterObj = await res.json();
+    const requestsList = (masterObj && masterObj.data && Array.isArray(masterObj.data.requests)) ? masterObj.data.requests : [];
 
-  // 2. Fetch Local requests stored in localStorage
-  const localItems = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (key && key.startsWith('qr_req_')) {
-      try {
-        const item = JSON.parse(localStorage.getItem(key));
-        if (item) localItems.push(item);
-      } catch (e) {}
+    if (requestsList.length === 0) {
+      allRequests = [];
+      renderRequestsTable();
+      return;
     }
+
+    // Fetch details for all request IDs in parallel
+    const requestPromises = requestsList.map(cloudId => 
+      fetch(`${CLOUD_API_BASE}/${cloudId}`)
+        .then(r => r.json())
+        .then(obj => obj && obj.data ? { _cloudId: cloudId, ...obj.data } : null)
+        .catch(() => null)
+    );
+
+    const results = await Promise.all(requestPromises);
+    allRequests = results.filter(r => r !== null);
+    allRequests.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    renderRequestsTable();
+  } catch (err) {
+    console.error('Fetch requests error:', err);
   }
-
-  // Combine and deduplicate
-  const map = new Map();
-  apiItems.forEach(item => map.set(item.id, item));
-  localItems.forEach(item => {
-    if (!map.has(item.id) || (item.status !== 'Pending Admin QR')) {
-      map.set(item.id, item);
-    }
-  });
-
-  allRequests = Array.from(map.values());
-  allRequests.sort((a, b) => new Date(b.date) - new Date(a.date));
-
-  renderRequestsTable();
 }
 
 function showMasterQrPreview(url) {
@@ -127,10 +115,9 @@ async function uploadMasterQr() {
 
   const dataUrl = await fileToDataUrl(fileInput.files[0]);
   masterQrUrl = dataUrl;
-  merchantSettings.defaultQrImageUrl = dataUrl;
+  localStorage.setItem('admin_master_qr_url', masterQrUrl);
   showMasterQrPreview(masterQrUrl);
-
-  showToast('Master QR Image saved!', 'success');
+  showToast('Master QR Image saved locally!', 'success');
   fileInput.value = '';
 }
 
@@ -194,14 +181,14 @@ function renderRequestsTable() {
       <td>${screenshotBtn}</td>
       <td>
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
-          <button class="btn btn-primary btn-sm" onclick="openSendQrModal('${r.id}', '${r.clientName}', ${r.amount})" title="Attach & Send Specific QR Image to Client">
+          <button class="btn btn-primary btn-sm" onclick="openSendQrModal('${r._cloudId}', '${r.clientName}', ${r.amount})" title="Attach & Send Specific QR Image to Client">
             <i data-lucide="send" style="width:14px;"></i> Send QR
           </button>
           <a href="${waUrl}" target="_blank" class="btn btn-secondary btn-sm" style="color:#25D366; border-color:rgba(37,211,102,0.3);" title="WhatsApp Client">
             <i data-lucide="message-circle" style="width:14px;"></i>
           </a>
-          ${r.status === 'Payment Submitted' ? `<button class="btn btn-success btn-sm" onclick="updateStatus('${r.id}', 'Approved')" title="Approve Payment"><i data-lucide="check" style="width:14px;"></i></button>` : ''}
-          <button class="btn btn-danger btn-sm" onclick="deleteRequest('${r.id}')" title="Delete"><i data-lucide="trash-2" style="width:14px;"></i></button>
+          ${r.status === 'Payment Submitted' ? `<button class="btn btn-success btn-sm" onclick="updateStatus('${r._cloudId}', 'Approved')" title="Approve Payment"><i data-lucide="check" style="width:14px;"></i></button>` : ''}
+          <button class="btn btn-danger btn-sm" onclick="deleteRequest('${r._cloudId}')" title="Delete"><i data-lucide="trash-2" style="width:14px;"></i></button>
         </div>
       </td>
     `;
@@ -211,8 +198,8 @@ function renderRequestsTable() {
   lucide.createIcons();
 }
 
-function openSendQrModal(id, clientName, amount) {
-  targetRequestId = id;
+function openSendQrModal(cloudId, clientName, amount) {
+  targetRequestCloudId = cloudId;
   document.getElementById('modal-client-name').innerText = clientName;
   document.getElementById('modal-client-amount').innerText = `₹${amount}`;
   document.getElementById('sendQrModal').classList.add('show');
@@ -224,7 +211,7 @@ function closeSendQrModal() {
 
 async function handleSendSpecificQr(e) {
   e.preventDefault();
-  if (!targetRequestId) return;
+  if (!targetRequestCloudId) return;
 
   const fileInput = document.getElementById('specificQrFileInput');
   if (!fileInput.files[0]) {
@@ -233,73 +220,85 @@ async function handleSendSpecificQr(e) {
   }
 
   const qrDataUrl = await fileToDataUrl(fileInput.files[0]);
-  await dispatchQrToClient(targetRequestId, qrDataUrl);
+  await dispatchQrToClient(targetRequestCloudId, qrDataUrl);
 }
 
 async function sendMasterQrToClient() {
-  if (!targetRequestId) return;
+  if (!targetRequestCloudId) return;
   if (!masterQrUrl) {
     showToast('Please upload a Master QR Image first!', 'error');
     return;
   }
-  await dispatchQrToClient(targetRequestId, masterQrUrl);
+  await dispatchQrToClient(targetRequestCloudId, masterQrUrl);
 }
 
-async function dispatchQrToClient(reqId, qrUrl) {
-  // Update local storage
-  const reqObj = allRequests.find(r => r.id === reqId) || { id: reqId };
-  reqObj.assignedQrUrl = qrUrl;
-  reqObj.status = 'QR Sent';
-  localStorage.setItem(`qr_req_${reqId}`, JSON.stringify(reqObj));
-
-  if (bc) {
-    bc.postMessage({ type: 'QR_SENT', requestId: reqId, request: reqObj });
-  }
-
-  // Update API /api/requests
+async function dispatchQrToClient(cloudId, qrUrl) {
   try {
-    await fetch('/api/requests', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: reqId, assignedQrUrl: qrUrl, status: 'QR Sent' })
-    });
-  } catch (err) {}
+    const res = await fetch(`${CLOUD_API_BASE}/${cloudId}`);
+    const obj = await res.json();
 
-  closeSendQrModal();
-  showToast('Payment QR Code sent to client! Client screen will now show QR.', 'success');
-  await fetchAdminRequests();
-}
+    if (obj && obj.data) {
+      const updatedData = { ...obj.data, assignedQrUrl: qrUrl, status: 'QR Sent' };
+      await fetch(`${CLOUD_API_BASE}/${cloudId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: obj.name, data: updatedData })
+      });
 
-async function updateStatus(id, newStatus) {
-  const reqObj = allRequests.find(r => r.id === id);
-  if (reqObj) {
-    reqObj.status = newStatus;
-    localStorage.setItem(`qr_req_${id}`, JSON.stringify(reqObj));
+      closeSendQrModal();
+      showToast('Payment QR Code sent to client! Client screen will now show QR.', 'success');
+      await fetchAdminRequests();
+    }
+  } catch (err) {
+    showToast('Network error while dispatching QR', 'error');
   }
-
-  try {
-    await fetch('/api/requests', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, status: newStatus })
-    });
-  } catch (err) {}
-
-  showToast(`Marked as ${newStatus}`, 'success');
-  await fetchAdminRequests();
 }
 
-async function deleteRequest(id) {
+async function updateStatus(cloudId, newStatus) {
+  try {
+    const res = await fetch(`${CLOUD_API_BASE}/${cloudId}`);
+    const obj = await res.json();
+    if (obj && obj.data) {
+      const updatedData = { ...obj.data, status: newStatus };
+      await fetch(`${CLOUD_API_BASE}/${cloudId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: obj.name, data: updatedData })
+      });
+
+      showToast(`Marked as ${newStatus}`, 'success');
+      await fetchAdminRequests();
+    }
+  } catch (err) {
+    showToast('Error updating status', 'error');
+  }
+}
+
+async function deleteRequest(cloudId) {
   if (!confirm('Delete this request?')) return;
-
-  localStorage.removeItem(`qr_req_${id}`);
-
   try {
-    await fetch(`/api/requests?id=${id}`, { method: 'DELETE' });
-  } catch (err) {}
+    await fetch(`${CLOUD_API_BASE}/${cloudId}`, { method: 'DELETE' });
 
-  showToast('Request deleted', 'success');
-  await fetchAdminRequests();
+    // Remove from master index
+    const res = await fetch(`${CLOUD_API_BASE}/${MASTER_INDEX_ID}`);
+    const masterObj = await res.json();
+    let requestsList = (masterObj && masterObj.data && Array.isArray(masterObj.data.requests)) ? masterObj.data.requests : [];
+    requestsList = requestsList.filter(id => id !== cloudId);
+
+    await fetch(`${CLOUD_API_BASE}/${MASTER_INDEX_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'QR_DISPATCHER_MASTER_INDEX',
+        data: { requests: requestsList }
+      })
+    });
+
+    showToast('Request deleted', 'success');
+    await fetchAdminRequests();
+  } catch (err) {
+    showToast('Error deleting', 'error');
+  }
 }
 
 function fileToDataUrl(file) {
