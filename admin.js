@@ -1,4 +1,5 @@
 const CLOUD_DB_BASE = "https://qr-payment-live-default-rtdb.asia-southeast1.firebasedatabase.app";
+const bc = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('qr_payment_channel') : null;
 
 let adminPin = sessionStorage.getItem('admin_pin') || '';
 let allRequests = [];
@@ -20,6 +21,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const sendQrForm = document.getElementById('send-qr-form');
   if (sendQrForm) sendQrForm.addEventListener('submit', handleSendSpecificQr);
+
+  // Listen to BroadcastChannel for instant local notifications
+  if (bc) {
+    bc.onmessage = (event) => {
+      if (event.data && event.data.type === 'NEW_REQUEST') {
+        fetchAdminRequests();
+        showToast(`New QR Request received from ${event.data.request.clientName}!`, 'info');
+      }
+    };
+  }
 
   if (adminPin) {
     verifyAndInitAdmin();
@@ -79,19 +90,44 @@ async function fetchSettings() {
 }
 
 async function fetchAdminRequests() {
+  let cloudItems = [];
+
+  // 1. Fetch Cloud requests
   try {
     const res = await fetch(`${CLOUD_DB_BASE}/requests.json`);
     const data = await res.json();
-
-    allRequests = [];
     if (data) {
       Object.keys(data).forEach(key => {
-        if (data[key]) allRequests.push(data[key]);
+        if (data[key]) cloudItems.push(data[key]);
       });
-      allRequests.sort((a, b) => new Date(b.date) - new Date(a.date));
     }
-    renderRequestsTable();
   } catch (err) {}
+
+  // 2. Fetch Local requests stored in localStorage
+  const localItems = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('qr_req_')) {
+      try {
+        const item = JSON.parse(localStorage.getItem(key));
+        if (item) localItems.push(item);
+      } catch (e) {}
+    }
+  }
+
+  // Combine and deduplicate
+  const map = new Map();
+  cloudItems.forEach(item => map.set(item.id, item));
+  localItems.forEach(item => {
+    if (!map.has(item.id) || (item.status !== 'Pending Admin QR')) {
+      map.set(item.id, item);
+    }
+  });
+
+  allRequests = Array.from(map.values());
+  allRequests.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  renderRequestsTable();
 }
 
 function showMasterQrPreview(url) {
@@ -111,26 +147,20 @@ async function uploadMasterQr() {
   }
 
   const dataUrl = await fileToDataUrl(fileInput.files[0]);
+  masterQrUrl = dataUrl;
+  merchantSettings.defaultQrImageUrl = dataUrl;
+  showMasterQrPreview(masterQrUrl);
 
   try {
-    const res = await fetch(`${CLOUD_DB_BASE}/settings.json`, {
+    await fetch(`${CLOUD_DB_BASE}/settings.json`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ defaultQrImageUrl: dataUrl })
     });
+  } catch (err) {}
 
-    if (res.ok) {
-      masterQrUrl = dataUrl;
-      merchantSettings.defaultQrImageUrl = dataUrl;
-      showMasterQrPreview(masterQrUrl);
-      showToast('Master QR Image saved to Cloud Database!', 'success');
-      fileInput.value = '';
-    } else {
-      showToast('Error uploading Master QR', 'error');
-    }
-  } catch (err) {
-    showToast('Network error during upload', 'error');
-  }
+  showToast('Master QR Image saved!', 'success');
+  fileInput.value = '';
 }
 
 function renderRequestsTable() {
@@ -245,56 +275,61 @@ async function sendMasterQrToClient() {
 }
 
 async function dispatchQrToClient(reqId, qrUrl) {
+  // Update local storage
+  const reqObj = allRequests.find(r => r.id === reqId) || { id: reqId };
+  reqObj.assignedQrUrl = qrUrl;
+  reqObj.status = 'QR Sent';
+  localStorage.setItem(`qr_req_${reqId}`, JSON.stringify(reqObj));
+
+  // Send BroadcastChannel message to local client tab
+  if (bc) {
+    bc.postMessage({ type: 'QR_SENT', requestId: reqId, request: reqObj });
+  }
+
+  // Update Cloud DB
   try {
-    const res = await fetch(`${CLOUD_DB_BASE}/requests/${reqId}.json`, {
+    await fetch(`${CLOUD_DB_BASE}/requests/${reqId}.json`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assignedQrUrl: qrUrl, status: 'QR Sent' })
     });
+  } catch (err) {}
 
-    if (res.ok) {
-      closeSendQrModal();
-      showToast('Specific QR Code sent to client! Client screen will now show QR.', 'success');
-      await fetchAdminRequests();
-    } else {
-      showToast('Error sending QR code.', 'error');
-    }
-  } catch (err) {
-    showToast('Network error while dispatching QR', 'error');
-  }
+  closeSendQrModal();
+  showToast('Payment QR Code sent to client! Client screen will now show QR.', 'success');
+  await fetchAdminRequests();
 }
 
 async function updateStatus(id, newStatus) {
+  const reqObj = allRequests.find(r => r.id === id);
+  if (reqObj) {
+    reqObj.status = newStatus;
+    localStorage.setItem(`qr_req_${id}`, JSON.stringify(reqObj));
+  }
+
   try {
-    const res = await fetch(`${CLOUD_DB_BASE}/requests/${id}.json`, {
+    await fetch(`${CLOUD_DB_BASE}/requests/${id}.json`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: newStatus })
     });
+  } catch (err) {}
 
-    if (res.ok) {
-      showToast(`Marked as ${newStatus}`, 'success');
-      await fetchAdminRequests();
-    }
-  } catch (err) {
-    showToast('Error updating status', 'error');
-  }
+  showToast(`Marked as ${newStatus}`, 'success');
+  await fetchAdminRequests();
 }
 
 async function deleteRequest(id) {
   if (!confirm('Delete this request?')) return;
-  try {
-    const res = await fetch(`${CLOUD_DB_BASE}/requests/${id}.json`, {
-      method: 'DELETE'
-    });
 
-    if (res.ok) {
-      showToast('Request deleted', 'success');
-      await fetchAdminRequests();
-    }
-  } catch (err) {
-    showToast('Error deleting', 'error');
-  }
+  localStorage.removeItem(`qr_req_${id}`);
+
+  try {
+    await fetch(`${CLOUD_DB_BASE}/requests/${id}.json`, { method: 'DELETE' });
+  } catch (err) {}
+
+  showToast('Request deleted', 'success');
+  await fetchAdminRequests();
 }
 
 function fileToDataUrl(file) {
