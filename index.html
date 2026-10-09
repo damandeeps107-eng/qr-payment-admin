@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard & QR Dispatcher | Instant Pay</title>
+  <!-- Google Fonts & Lucide Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <div class="container">
+    <!-- Navbar -->
+    <header class="navbar">
+      <div class="brand">
+        <div class="brand-icon" style="background: linear-gradient(135deg, #10b981, #059669);">
+          <i data-lucide="shield-check"></i>
+        </div>
+        <div>
+          <div class="brand-title">Admin QR Dispatcher Panel</div>
+          <div class="brand-subtitle" id="admin-merchant-name">Inspire Technologies</div>
+        </div>
+      </div>
+      <div class="nav-actions">
+        <button class="btn btn-danger btn-sm" onclick="logoutAdmin()">
+          <i data-lucide="log-out"></i> Logout
+        </button>
+      </div>
+    </header>
+
+    <!-- Admin Login Modal -->
+    <div class="modal-backdrop show" id="loginModal">
+      <div class="modal-content" style="max-width: 400px; text-align: center;">
+        <div class="brand-icon" style="margin: 0 auto 16px auto; width: 56px; height: 56px; font-size: 28px;">
+          <i data-lucide="lock"></i>
+        </div>
+        <h2 style="color: #fff; margin-bottom: 8px;">Admin Login</h2>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 20px;">
+          Enter 4-digit Admin PIN (Default PIN: <strong>1234</strong>)
+        </p>
+
+        <form id="admin-login-form">
+          <div class="form-group">
+            <input type="password" id="adminPinInput" class="form-control" placeholder="Enter PIN" maxlength="10" required style="text-align: center; font-size: 1.5rem; letter-spacing: 8px;">
+          </div>
+          <button type="submit" class="btn btn-primary" style="width: 100%; justify-content: center; padding: 12px;">
+            <i data-lucide="key-round"></i> Unlock Admin Panel
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Main Dashboard Container -->
+    <div id="admin-dashboard" style="display: none;">
+
+      <!-- Default QR Code Setup Banner -->
+      <div class="glass-card" style="padding: 20px; border-left: 4px solid var(--primary); margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
+          <div>
+            <h3 style="font-size: 1.05rem; color: #fff; display: flex; align-items: center; gap: 8px;">
+              <i data-lucide="qr-code" style="color: var(--primary);"></i> Master Payment QR Image
+            </h3>
+            <span style="font-size: 0.8rem; color: var(--text-muted);">
+              Upload your standard payment QR once, so you can send it to any requesting client in 1 click!
+            </span>
+          </div>
+
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <input type="file" id="masterQrInput" accept="image/*" class="form-control" style="width: 220px; font-size: 0.8rem;">
+            <button class="btn btn-success btn-sm" onclick="uploadMasterQr()">
+              <i data-lucide="upload"></i> Upload Master QR
+            </button>
+          </div>
+        </div>
+
+        <div id="master-qr-preview-box" style="display: none; margin-top: 12px; font-size: 0.85rem; color: #34d399; display: flex; align-items: center; gap: 10px;">
+          <span>✅ Master QR Uploaded:</span>
+          <img id="master-qr-img-preview" src="" alt="Master QR" style="width: 40px; height: 40px; border-radius: 6px; border: 1px solid var(--card-border);">
+        </div>
+      </div>
+
+      <!-- Live Client Requests Table -->
+      <div class="glass-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
+          <div>
+            <h2 style="font-size: 1.2rem; color: #fff; display: flex; align-items: center; gap: 8px;">
+              <i data-lucide="bell" style="color: var(--warning);"></i> Live Client QR Requests
+            </h2>
+            <span style="font-size: 0.8rem; color: var(--text-muted);">
+              Real-time incoming payment requests from clients. Click <strong>"Send QR"</strong> to attach and send QR image immediately.
+            </span>
+          </div>
+
+          <button class="btn btn-secondary btn-sm" onclick="fetchAdminRequests()">
+            <i data-lucide="refresh-cw"></i> Refresh List
+          </button>
+        </div>
+
+        <div class="table-responsive">
+          <table class="custom-table">
+            <thead>
+              <tr>
+                <th>Request ID / Date</th>
+                <th>Client Info</th>
+                <th>Requested Amount</th>
+                <th>Purpose</th>
+                <th>Status</th>
+                <th>UTR / Proof</th>
+                <th>Action (Send QR / Verify)</th>
+              </tr>
+            </thead>
+            <tbody id="requestsTableBody">
+              <!-- Populated dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Send QR Modal for Specific Request -->
+  <div class="modal-backdrop" id="sendQrModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 style="color: #fff; display: flex; align-items: center; gap: 8px;">
+          <i data-lucide="qr-code" style="color: var(--primary);"></i> Send QR Code To Client
+        </h3>
+        <button class="close-btn" onclick="closeSendQrModal()">&times;</button>
+      </div>
+
+      <div style="margin-bottom: 16px; font-size: 0.9rem; color: var(--text-muted);" id="send-qr-client-info">
+        Sending QR to: <strong style="color: #fff;" id="modal-client-name">Rahul</strong> (Amount: <strong style="color: #10b981;" id="modal-client-amount">₹1000</strong>)
+      </div>
+
+      <form id="send-qr-form">
+        <div class="form-group">
+          <label class="form-label">Option A: Upload Specific QR Image for this Request</label>
+          <input type="file" id="specificQrFileInput" class="form-control" accept="image/*">
+        </div>
+
+        <div class="form-group" style="text-align: center; margin: 10px 0; color: var(--text-muted); font-size: 0.8rem;">
+          --- OR ---
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Option B: Use Master QR Code</label>
+          <button type="button" class="btn btn-secondary" style="width: 100%; justify-content: center;" onclick="sendMasterQrToClient()">
+            <i data-lucide="check-circle"></i> Send Master QR Code Image
+          </button>
+        </div>
+
+        <button type="submit" class="btn btn-success" style="width: 100%; justify-content: center; padding: 12px; margin-top: 14px;">
+          <i data-lucide="send"></i> Upload & Send Custom QR Image
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Image Lightbox Modal -->
+  <div class="modal-backdrop" id="imageModal">
+    <div class="modal-content" style="max-width: 600px; text-align: center;">
+      <div class="modal-header">
+        <h3 style="color: #fff;">Screenshot Preview</h3>
+        <button class="close-btn" onclick="closeImageModal()">&times;</button>
+      </div>
+      <img id="modalZoomImage" src="" alt="Screenshot" style="max-width: 100%; max-height: 70vh; border-radius: 10px;">
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="adminToastContainer"></div>
+
+  <script src="admin.js"></script>
+</body>
+</html>
